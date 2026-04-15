@@ -35,30 +35,172 @@ class Recommender:
     Required by tests/test_recommender.py
     """
     def __init__(self, songs: List[Song]):
+        """Initialize the recommender with a list of available songs."""
         self.songs = songs
 
+    def _score(self, user: UserProfile, song: Song) -> float:
+        """
+        Compute a weighted compatibility score between a user profile and a song.
+
+        Scoring weights:
+          - Genre match:        25%
+          - Mood match:         20%
+          - Energy proximity:   30%
+          - Acousticness fit:   15%
+          - Danceability:       10%
+
+        Returns a float in [0.0, 1.0] where higher means a better match.
+        """
+        genre_match = 1.0 if song.genre == user.favorite_genre else 0.0
+        mood_match = 1.0 if song.mood == user.favorite_mood else 0.0
+        energy_proximity = 1.0 - abs(song.energy - user.target_energy)
+        acousticness_fit = song.acousticness if user.likes_acoustic else (1.0 - song.acousticness)
+        danceability_score = song.danceability
+
+        return (
+            genre_match       * 0.25 +
+            mood_match        * 0.20 +
+            energy_proximity  * 0.30 +
+            acousticness_fit  * 0.15 +
+            danceability_score * 0.10
+        )
+
     def recommend(self, user: UserProfile, k: int = 5) -> List[Song]:
-        # TODO: Implement recommendation logic
-        return self.songs[:k]
+        """
+        Return the top-k songs for a user, ranked by compatibility score.
+
+        Applies a diversity cap of at most 2 songs per genre so results
+        span multiple genres. If fewer than k qualifying songs exist,
+        returns all that match the cap.
+        """
+        scored = sorted(self.songs, key=lambda s: self._score(user, s), reverse=True)
+
+        # Diversity cap: max 2 songs per genre
+        results = []
+        genre_counts: Dict[str, int] = {}
+        for song in scored:
+            if genre_counts.get(song.genre, 0) < 2:
+                results.append(song)
+                genre_counts[song.genre] = genre_counts.get(song.genre, 0) + 1
+            if len(results) == k:
+                break
+
+        return results
 
     def explain_recommendation(self, user: UserProfile, song: Song) -> str:
-        # TODO: Implement explanation logic
-        return "Explanation placeholder"
+        """
+        Generate a human-readable explanation for why a song was recommended.
+
+        Checks genre, mood, energy proximity, and acousticness against the
+        user profile and returns a sentence listing the matching factors.
+        Falls back to a generic message if no specific factor matches.
+        """
+        reasons = []
+        if song.genre == user.favorite_genre:
+            reasons.append(f"it's {song.genre} (your favorite genre)")
+        if song.mood == user.favorite_mood:
+            reasons.append(f"it matches your {song.mood} mood preference")
+        if abs(song.energy - user.target_energy) <= 0.15:
+            reasons.append(f"its energy ({song.energy}) is close to your target ({user.target_energy})")
+        if user.likes_acoustic and song.acousticness >= 0.6:
+            reasons.append("it has a strong acoustic feel")
+        if not user.likes_acoustic and song.acousticness <= 0.3:
+            reasons.append("it has a non-acoustic, produced sound")
+
+        if not reasons:
+            reasons.append("it closely matches your overall listening profile")
+
+        return "Recommended because " + ", and ".join(reasons) + "."
 
 def load_songs(csv_path: str) -> List[Dict]:
     """
     Loads songs from a CSV file.
     Required by src/main.py
     """
-    # TODO: Implement CSV loading logic
-    print(f"Loading songs from {csv_path}...")
-    return []
+    import csv
+    songs = []
+    with open(csv_path, newline="") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            songs.append({
+                "id": int(row["id"]),
+                "title": row["title"],
+                "artist": row["artist"],
+                "genre": row["genre"],
+                "mood": row["mood"],
+                "energy": float(row["energy"]),
+                "tempo_bpm": float(row["tempo_bpm"]),
+                "valence": float(row["valence"]),
+                "danceability": float(row["danceability"]),
+                "acousticness": float(row["acousticness"]),
+            })
+    return songs
+
+def _score_song(user_prefs: Dict, song: Dict) -> float:
+    """
+    Compute a weighted compatibility score between a user preference dict and a song dict.
+
+    Expected keys in user_prefs: 'genre', 'mood', 'energy' (float), 'likes_acoustic' (bool).
+    Uses the same weighting as Recommender._score (genre 25%, mood 20%, energy 30%,
+    acousticness 15%, danceability 10%).
+
+    Returns a float in [0.0, 1.0].
+    """
+    genre_match = 1.0 if song["genre"] == user_prefs.get("genre") else 0.0
+    mood_match = 1.0 if song["mood"] == user_prefs.get("mood") else 0.0
+    energy_proximity = 1.0 - abs(song["energy"] - user_prefs.get("energy", 0.5))
+    likes_acoustic = user_prefs.get("likes_acoustic", False)
+    acousticness_fit = song["acousticness"] if likes_acoustic else (1.0 - song["acousticness"])
+    danceability_score = song["danceability"]
+
+    return (
+        genre_match        * 0.25 +
+        mood_match         * 0.20 +
+        energy_proximity   * 0.30 +
+        acousticness_fit   * 0.15 +
+        danceability_score * 0.10
+    )
+
+def _explain_song(user_prefs: Dict, song: Dict) -> str:
+    """
+    Generate a human-readable explanation for why a song matches a preference dict.
+
+    Mirrors the logic of Recommender.explain_recommendation but operates on
+    plain dicts instead of dataclass instances. Falls back to a generic message
+    if no specific factor matches.
+    """
+    reasons = []
+    if song["genre"] == user_prefs.get("genre"):
+        reasons.append(f"it's {song['genre']} (your favorite genre)")
+    if song["mood"] == user_prefs.get("mood"):
+        reasons.append(f"it matches your {song['mood']} mood preference")
+    if abs(song["energy"] - user_prefs.get("energy", 0.5)) <= 0.15:
+        reasons.append(f"its energy ({song['energy']}) is close to your target")
+    if user_prefs.get("likes_acoustic") and song["acousticness"] >= 0.6:
+        reasons.append("it has a strong acoustic feel")
+    if not user_prefs.get("likes_acoustic") and song["acousticness"] <= 0.3:
+        reasons.append("it has a non-acoustic, produced sound")
+    if not reasons:
+        reasons.append("it closely matches your overall listening profile")
+    return "Recommended because " + ", and ".join(reasons) + "."
 
 def recommend_songs(user_prefs: Dict, songs: List[Dict], k: int = 5) -> List[Tuple[Dict, float, str]]:
     """
     Functional implementation of the recommendation logic.
     Required by src/main.py
     """
-    # TODO: Implement scoring and ranking logic
-    # Expected return format: (song_dict, score, explanation)
-    return []
+    scored = sorted(songs, key=lambda s: _score_song(user_prefs, s), reverse=True)
+
+    results = []
+    genre_counts: Dict[str, int] = {}
+    for song in scored:
+        genre = song["genre"]
+        if genre_counts.get(genre, 0) < 2:
+            score = _score_song(user_prefs, song)
+            explanation = _explain_song(user_prefs, song)
+            results.append((song, score, explanation))
+            genre_counts[genre] = genre_counts.get(genre, 0) + 1
+        if len(results) == k:
+            break
+
+    return results
